@@ -1,27 +1,18 @@
-# Fails when a repo's .agents/shared/ differs from agent-harness at the ref it pins in
-# .agents/shared/VERSION. Fix it by running agent-harness's scripts/sync.sh in the repo.
+# Fails when a repository does not mount agent-harness as a submodule at .agents/shared.
+# Dependabot keeps the pin current; this only checks that the mount exists and resolves.
 name: Harness check
 on:
   workflow_call:
-    secrets:
-      HARNESS_TOKEN:
-        description: Read token for agent-harness, only needed while that repo is private
-        required: false
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Read the pinned harness ref
-        id: ref
-        run: echo "ref=$(cat .agents/shared/VERSION)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
         with:
-          repository: Ascentwright-Capital/agent-harness
-          ref: ${{ steps.ref.outputs.ref }}
-          path: .harness
-          token: ${{ secrets.HARNESS_TOKEN || github.token }}
-      - name: Compare
+          submodules: recursive
+      - name: Check the agent-harness submodule
         run: |
-          diff -r --exclude=VERSION .harness/shared .agents/shared \
-            || { echo "::error::.agents/shared is out of date. Run agent-harness/scripts/sync.sh"; exit 1; }
+          git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | grep -q ' \.agents/shared$' \
+            || { echo "::error::Mount agent-harness at .agents/shared: git submodule add https://github.com/Ascentwright-Capital/agent-harness .agents/shared"; exit 1; }
+          test -f .agents/shared/standards.md \
+            || { echo "::error::.agents/shared is empty or not agent-harness"; exit 1; }
