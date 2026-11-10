@@ -1,0 +1,6 @@
+{
+  "name": "Ascentwright Node CI",
+  "description": "Type check, lint, test and build with the shared workflow, plus the agent harness check.",
+  "iconName": "octicon check-circle",
+  "categories": ["JavaScript", "TypeScript"]
+}
