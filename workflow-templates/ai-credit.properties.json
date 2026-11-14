@@ -1,0 +1,6 @@
+{
+  "name": "Ascentwright AI credit check",
+  "description": "Fails a pull request whose title, description or commits credit an AI.",
+  "iconName": "octicon shield-check",
+  "categories": ["Automation"]
+}
