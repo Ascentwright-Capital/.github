@@ -1,0 +1,75 @@
+# Fails a pull request that credits an AI: in its title, its description, or any of its commits
+# (message, author or committer). The rule is in agent-harness standards.md: Ken is the sole author.
+#
+# Blocked: Co-authored-by an AI tool, "Generated with/by <AI tool>", Claude-Session lines, Claude
+# session and product links, noreply@anthropic.com, and "Requested by" lines. The patterns match the
+# Claude Code hook in agent-harness, templates/claude-hooks/block-ai-credit.sh: change both together.
+#
+# The label `upstream-sync` skips the commit check, for a pull request that brings in commits from
+# an upstream project. The title and description are still checked.
+#
+# Call it from a workflow that runs on pull_request with the types opened, edited, synchronize,
+# reopened, labeled and unlabeled, so a corrected description or a new label runs it again.
+name: AI credit check
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  check:
+    name: No AI credit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check the title, description and commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          [ -n "$NUMBER" ] || { echo "Not a pull request: nothing to check."; exit 0; }
+
+          ai='claude|anthropic|copilot|chatgpt|openai|codex|cursor (ai|agent)|cursoragent|gemini|devin ai|devin-ai|aider'
+          end='([^[:alnum:]]|$)'
+          credit="co-authored-by:.*($ai)$end|(generated|written|authored|created|built|made) (with|by) ([[:alnum:]]+ )?[^[:alnum:]]*($ai)$end|claude-session:|claude\\.ai/code/session|claude\\.com/claude-code|noreply@anthropic\\.com"
+          lead='[>*_[:space:]-]*requested[- ]by'
+          failed=0
+
+          # Read the pull request now, not from the event, so a re-run sees a corrected description.
+          pr=$(gh api "repos/$REPO/pulls/$NUMBER")
+
+          if [ "$(jq -r .user.login <<<"$pr")" = "dependabot[bot]" ]; then
+            echo "Dependabot wrote the description from upstream release notes: not checked."
+          else
+            hits=$(jq -r '"title: \(.title)", ((.body // "") | split("\n")[] | "description: \(.)")' <<<"$pr" |
+              tr -d '\r' | grep -Ei -e "$credit" -e "^(title|description): $lead" || true)
+            if [ -n "$hits" ]; then
+              failed=1
+              while IFS= read -r line; do echo "::error title=AI credit in the pull request::$line"; done <<<"$hits"
+            fi
+          fi
+
+          if jq -e '[.labels[].name] | index("upstream-sync")' <<<"$pr" >/dev/null; then
+            echo "Label upstream-sync: commits not checked."
+          else
+            hits=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" --jq '.[] | .sha[0:7] as $sha
+                | ("author \(.commit.author.name) <\(.commit.author.email)>",
+                   "committer \(.commit.committer.name) <\(.commit.committer.email)>",
+                   (.commit.message | split("\n")[]))
+                | "\($sha): \(.)"' |
+              tr -d '\r' | grep -Ei -e "$credit" -e "^[0-9a-f]{7}: $lead" -e "^[0-9a-f]{7}: (author|committer) .*($ai)$end" || true)
+            if [ -n "$hits" ]; then
+              failed=1
+              while IFS= read -r line; do echo "::error title=AI credit in a commit::$line"; done <<<"$hits"
+            fi
+          fi
+
+          if [ "$failed" = 1 ]; then
+            echo "Remove every Co-authored-by, Generated with, Claude-Session and Requested by line and any Claude link."
+            echo "For a commit: rewrite its message, and re-author it as a person if an AI is the author or committer."
+            exit 1
+          fi
+          echo "No AI credit found."
