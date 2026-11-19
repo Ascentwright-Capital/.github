@@ -1,0 +1,22 @@
+# Deploys production on a release tag (vYYYY.MM.DD): runs the checks, then each Railway service in
+# order. Staging needs no workflow: Railway deploys it from main by itself.
+# The release itself lives in Ascentwright-Capital/.github. Before the first release, set in the
+# repository's settings:
+#   secret RAILWAY_TOKEN: a Railway project token for the production environment
+#   variable RAILWAY_SERVICES: the service names, space separated, the one that migrates the database first
+name: Release to production
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: release-production
+  cancel-in-progress: false
+jobs:
+  release:
+    uses: Ascentwright-Capital/.github/.github/workflows/railway-release.yml@main
+    with:
+      services: ${{ vars.RAILWAY_SERVICES }}
+    secrets:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

@@ -1,0 +1,76 @@
+# Reusable release to Railway: run a repository's checks, then deploy its services to one Railway
+# environment, one after another. Modelled on Nusa Auto's release.yml (D-44, D-45). A repo calls it
+# on a release tag from its own workflow (see workflow-templates/railway-release.yml):
+#
+#   on:
+#     push:
+#       tags: ["v*"]
+#   jobs:
+#     release:
+#       uses: Ascentwright-Capital/.github/.github/workflows/railway-release.yml@main
+#       with:
+#         services: ${{ vars.RAILWAY_SERVICES }}
+#       secrets:
+#         RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+#
+# Services deploy in the order given. Put first the one whose pre-deploy step migrates the database,
+# so the others start against the new schema. Staging needs no workflow: Railway deploys it from
+# main by itself.
+name: Railway release
+on:
+  workflow_call:
+    inputs:
+      services:
+        description: Railway service names, space separated, in the order they deploy
+        type: string
+        required: true
+      environment:
+        description: The Railway environment, and the GitHub environment the deploy job runs in
+        type: string
+        default: production
+      scripts:
+        description: Package scripts to run before deploying, space separated
+        type: string
+        default: typecheck lint test build
+      working-directory:
+        type: string
+        default: .
+    secrets:
+      RAILWAY_TOKEN:
+        description: A Railway project token for that environment
+        required: true
+permissions:
+  contents: read
+jobs:
+  check:
+    uses: Ascentwright-Capital/.github/.github/workflows/node-ci.yml@main
+    with:
+      scripts: ${{ inputs.scripts }}
+      working-directory: ${{ inputs.working-directory }}
+  deploy:
+    name: Deploy to Railway ${{ inputs.environment }}
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      SERVICES: ${{ inputs.services }}
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: npm install --global @railway/cli
+      - name: Deploy each service in order
+        run: |
+          set -euf
+          if [ -z "$SERVICES" ]; then
+            echo "::error::No services to deploy. Pass the input services, for example from the repository variable RAILWAY_SERVICES."
+            exit 1
+          fi
+          for service in $SERVICES; do
+            echo "::group::$service"
+            railway up --ci --environment "$TARGET_ENVIRONMENT" --service "$service"
+            echo "::endgroup::"
+          done
