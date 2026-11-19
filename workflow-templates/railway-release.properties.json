@@ -1,0 +1,6 @@
+{
+  "name": "Ascentwright release to Railway",
+  "description": "On a release tag: type check, lint, test and build, then deploy each Railway service to production in order.",
+  "iconName": "octicon rocket",
+  "categories": ["Deployment"]
+}
