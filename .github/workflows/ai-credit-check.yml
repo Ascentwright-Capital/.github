@@ -55,12 +55,21 @@ jobs:
           if jq -e '[.labels[].name] | index("upstream-sync")' <<<"$pr" >/dev/null; then
             echo "Label upstream-sync: commits not checked."
           else
-            hits=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" --jq '.[] | .sha[0:7] as $sha
+            # Read the listing on its own line, so a failed request fails the check instead of
+            # reading as "no credit found".
+            listing=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" --jq '.[] | .sha[0:7] as $sha
                 | ("author \(.commit.author.name) <\(.commit.author.email)>",
                    "committer \(.commit.committer.name) <\(.commit.committer.email)>",
                    (.commit.message | split("\n")[]))
-                | "\($sha): \(.)"' |
-              tr -d '\r' | grep -Ei -e "$credit" -e "^[0-9a-f]{7}: $lead" -e "^[0-9a-f]{7}: (author|committer) .*($ai)$end" || true)
+                | "\($sha): \(.)"')
+            # The endpoint lists at most 250 commits. A pull request we could not read in full fails.
+            expected=$(jq -r .commits <<<"$pr")
+            seen=$(grep -c '^[0-9a-f]\{7\}: author ' <<<"$listing" || true)
+            if [ "$seen" != "$expected" ]; then
+              failed=1
+              echo "::error title=Commits not fully checked::Read $seen of $expected commits. Squash or split the pull request so every commit can be checked."
+            fi
+            hits=$(tr -d '\r' <<<"$listing" | grep -Ei -e "$credit" -e "^[0-9a-f]{7}: $lead" -e "^[0-9a-f]{7}: (author|committer) .*($ai)$end" || true)
             if [ -n "$hits" ]; then
               failed=1
               while IFS= read -r line; do echo "::error title=AI credit in a commit::$line"; done <<<"$hits"
