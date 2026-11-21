@@ -1,0 +1,93 @@
+# Fails a pull request whose description does not show the change working. The rule is in
+# agent-harness standards.md, "Show it working"; the steps are in agent-harness workflows/verify.md.
+#
+# The description needs a "Verification" (or "Proof") section with either
+#   - at least one screenshot and a demo video, or
+#   - a line "No visible surface: <why>" and the commands run with their output in a code block.
+# A screenshot is a Markdown image or an <img> tag. A video is a link to an .mp4, .webm, .mov or .gif
+# file, or a video uploaded to GitHub (a bare https://github.com/user-attachments/assets/... line).
+#
+# Input `ui-paths`: an extended regular expression for the files that have a visible surface, for
+# example '^(src|public)/'. A pull request that changes one of them cannot claim "No visible surface".
+# Test files (__tests__/, e2e/, tests/, *.test.*, *.spec.*) never count.
+#
+# Evidence files themselves must not reach main: a pull request whose changes include .pr-evidence/
+# fails. publish.sh in agent-harness adds them and takes them out again in the next commit.
+#
+# Call it from a workflow that runs on pull_request with the types opened, edited, synchronize and
+# reopened, so a corrected description runs it again. Dependabot's pull requests are not checked.
+name: PR evidence check
+on:
+  workflow_call:
+    inputs:
+      ui-paths:
+        description: Extended regular expression for the files with a visible surface. Empty for none.
+        type: string
+        default: ""
+permissions: {}
+jobs:
+  check:
+    name: Shows the change working
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check the description and the changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          UI_PATHS: ${{ inputs.ui-paths }}
+        run: |
+          set -euo pipefail
+          [ -n "$NUMBER" ] || { echo "Not a pull request: nothing to check."; exit 0; }
+
+          # Read the pull request now, not from the event, so a re-run sees a corrected description.
+          pr=$(gh api "repos/$REPO/pulls/$NUMBER")
+          if [ "$(jq -r .user.login <<<"$pr")" = "dependabot[bot]" ]; then
+            echo "Dependabot: not checked."
+            exit 0
+          fi
+          # Read the listing on its own line, so a failed request fails the check.
+          changed=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files" --jq '.[].filename')
+          failed=0
+          fail() { failed=1; echo "::error title=$1::$2"; }
+
+          # The section: from a "Verification" or "Proof" heading to the next heading, comments removed.
+          section=$(jq -r '.body // ""' <<<"$pr" | tr -d '\r' | perl -0777 -pe 's/<!--.*?-->//gs' | awk '
+            /^#+[ \t]/ { if (on) exit; if (tolower($0) ~ /^#+[ \t]+(verification|proof)[ \t]*$/) { on = 1; next } }
+            on { print }')
+          images=$(grep -cEi '!\[[^]]*\]\([^)]+\)|<img[[:space:]][^>]*src=' <<<"$section" || true)
+          videos=$(grep -cEi '\.(mp4|webm|mov|gif)([?#][^[:space:])"]*)?([[:space:])"]|$)|^[[:space:]]*https://github\.com/user-attachments/assets/[0-9a-f-]+[[:space:]]*$' <<<"$section" || true)
+          none=$(grep -cEi '^[[:space:]>*_-]*no visible surface[*_]*[[:space:]]*:[*_]*[[:space:]]*[^[:space:]]' <<<"$section" || true)
+          fences=$(grep -cE '^[[:space:]]*(```|~~~)' <<<"$section" || true)
+
+          if [ -z "$(tr -d '[:space:]' <<<"$section")" ]; then
+            fail "No verification" "Add a \"## Verification\" section that shows the change working: screenshots and a demo video, or \"No visible surface:\" with the commands you ran and their output."
+          elif [ "$none" -gt 0 ]; then
+            [ "$fences" -ge 2 ] ||
+              fail "No output shown" "\"No visible surface\" needs the commands you ran and their output, in a code block."
+            if [ -n "$UI_PATHS" ]; then
+              surface=$(grep -E -- "$UI_PATHS" <<<"$changed" |
+                grep -Ev '(^|/)(__tests__|e2e|tests?)/|\.(test|spec)\.[cm]?[jt]sx?$' || true)
+              if [ -n "$surface" ]; then
+                fail "This change has a visible surface" "It changes $(wc -l <<<"$surface" | tr -d ' ') file(s) people see, for example $(head -1 <<<"$surface"). Show screenshots and a demo video instead of \"No visible surface\"."
+              fi
+            fi
+          else
+            [ "$images" -gt 0 ] || fail "No screenshots" "Add a screenshot of each changed screen to the Verification section."
+            [ "$videos" -gt 0 ] || fail "No demo video" "Add a demo video of the changed flow to the Verification section."
+          fi
+
+          leaked=$(grep -E '^\.pr-evidence/' <<<"$changed" || true)
+          if [ -n "$leaked" ]; then
+            fail "Evidence files would reach main" "Take .pr-evidence/ out of the branch (git rm -r .pr-evidence). agent-harness scripts/pr-evidence/publish.sh does that for you."
+          fi
+
+          if [ "$failed" = 1 ]; then
+            echo "How to capture and attach the evidence: agent-harness workflows/verify.md."
+            exit 1
+          fi
+          echo "The pull request shows the change working."

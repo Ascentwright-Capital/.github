@@ -9,8 +9,10 @@ Defaults that every repository in Ascentwright-Capital inherits.
 | `.github/workflows/harness-check.yml` | Reusable check that a repo mounts `agent-harness` as a submodule at `.agents/shared`. |
 | `.github/workflows/ai-credit-check.yml` | Reusable check that fails a pull request whose title, description or commits credit an AI. |
 | `.github/workflows/ai-credit.yml` | Runs that check on this repository's own pull requests. |
+| `.github/workflows/pr-evidence-check.yml` | Reusable check that fails a pull request whose description does not show the change working: screenshots and a demo video, or the commands run and their output. |
+| `.github/workflows/pr-evidence.yml` | Runs that check on this repository's own pull requests. |
 | `.github/workflows/railway-release.yml` | Reusable release: runs the checks, then deploys each Railway service in order. A product calls it on a release tag. |
-| `workflow-templates/` | Starter workflows offered under Actions → New workflow: Node CI, AI credit, and release to Railway. |
+| `workflow-templates/` | Starter workflows offered under Actions → New workflow: Node CI, AI credit, PR evidence, and release to Railway. |
 
 ## Releasing a product to Railway
 
