@@ -1,0 +1,6 @@
+{
+  "name": "Ascentwright PR evidence",
+  "description": "Fails a pull request whose description does not show the change working: screenshots and a demo video, or the commands run and their output.",
+  "iconName": "octicon device-camera-video",
+  "categories": ["Automation"]
+}
