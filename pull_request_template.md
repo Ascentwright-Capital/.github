@@ -10,8 +10,9 @@ Linear: AP-
 
 ## Verification
 
-<!-- Show the change working, from the built app or the preview, after you have looked at it yourself.
+<!-- Say what you checked, from the built app or the preview, after you have looked at it yourself.
 Something people see: a screenshot of each changed screen in each language and size, and a demo video of the changed flow.
+Publish them with agent-harness scripts/pr-evidence/publish.sh (the check shows them in a comment), or drag them in here.
 Nothing to see: "No visible surface:" with why, then the commands you ran and their output in a code block.
 How: agent-harness workflows/verify.md. The "PR evidence" check fails a pull request without it. -->
 
