@@ -1,21 +1,30 @@
-# Fails a pull request whose description does not show the change working. The rule is in
-# agent-harness standards.md, "Show it working"; the steps are in agent-harness workflows/verify.md.
+# Fails a pull request that does not show the change working, and shows the evidence it finds as a
+# comment. The rule is in agent-harness standards.md, "Show it working"; the steps are in
+# agent-harness workflows/verify.md.
 #
-# The description needs a "Verification" (or "Proof") section with either
+# The description needs a "Verification" (or "Proof") section that says what was checked, and either
 #   - at least one screenshot and a demo video, or
 #   - a line "No visible surface: <why>" and the commands run with their output in a code block.
-# A screenshot is a Markdown image or an <img> tag. A video is a link to an .mp4, .webm, .mov or .gif
-# file, or a video uploaded to GitHub (a bare https://github.com/user-attachments/assets/... line).
+#
+# Screenshots and videos count from two places:
+#   - The pull request's commits: files that agent-harness scripts/pr-evidence/publish.sh added under
+#     .pr-evidence/<time>/. Only the latest folder counts. The check posts it as one comment, kept up
+#     to date, so the pictures show whatever tool wrote the description (an agent's GitHub tool
+#     cannot embed images in it).
+#   - The description: a Markdown image or an <img> for a screenshot; a link to an .mp4, .webm, .mov
+#     or .gif file, or a video uploaded to GitHub (a bare https://github.com/user-attachments/assets/...
+#     line), for a video.
 #
 # Input `ui-paths`: an extended regular expression for the files that have a visible surface, for
 # example '^(src|public)/'. A pull request that changes one of them cannot claim "No visible surface".
 # Test files (__tests__/, e2e/, tests/, *.test.*, *.spec.*) never count.
 #
-# Evidence files themselves must not reach main: a pull request whose changes include .pr-evidence/
-# fails. publish.sh in agent-harness adds them and takes them out again in the next commit.
+# Evidence files must not reach main: a pull request whose changes still include .pr-evidence/ fails.
 #
 # Call it from a workflow that runs on pull_request with the types opened, edited, synchronize and
-# reopened, so a corrected description runs it again. Dependabot's pull requests are not checked.
+# reopened, and grant the job contents: read and pull-requests: write (the comment). Without write
+# access the evidence still counts; the comment is skipped with a warning. Dependabot's pull requests
+# are not checked.
 name: PR evidence check
 on:
   workflow_call:
@@ -32,9 +41,9 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
     steps:
-      - name: Check the description and the changed files
+      - name: Check the description, the evidence and the changed files
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -50,10 +59,73 @@ jobs:
             echo "Dependabot: not checked."
             exit 0
           fi
-          # Read the listing on its own line, so a failed request fails the check.
+          # Read each listing on its own line, so a failed request fails the check.
           changed=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files" --jq '.[].filename')
+          commits=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/commits" --jq '.[].sha')
           failed=0
           fail() { failed=1; echo "::error title=$1::$2"; }
+
+          # Evidence from publish.sh: "<commit> <path>" for each picture or video a commit added under
+          # .pr-evidence/<time>/. Names outside the safe set are ignored, never shown.
+          safe='^\.pr-evidence/[0-9-]+/[A-Za-z0-9._/-]+\.(png|jpe?g|webp|gif|mp4|webm|mov)$'
+          found=""
+          for sha in $commits; do
+            added=$(gh api --paginate "repos/$REPO/commits/$sha" --jq '.files[] | select(.status == "added") | .filename')
+            found+=$(grep -E "$safe" <<<"$added" | sed "s|^|$sha |" || true)$'\n'
+          done
+          found=$(grep -v '^$' <<<"$found" || true)
+          latest=$(cut -d' ' -f2 <<<"$found" | cut -d/ -f2 | grep -v '^$' | sort | tail -1 || true)
+          evidence=""
+          [ -z "$latest" ] || evidence=$(grep -F " .pr-evidence/$latest/" <<<"$found" | sort -u -k2,2 || true)
+          stills=$(grep -cEi '\.(png|jpe?g|webp)$' <<<"$evidence" || true)
+          moving=$(grep -cEi '\.(gif|mp4|webm|mov)$' <<<"$evidence" || true)
+
+          # Show the evidence as one comment, kept up to date: GIF previews linked to their video,
+          # each page's phone and desktop screenshots side by side, narrow, full size on click.
+          if [ -n "$evidence" ]; then
+            url() { printf 'https://github.com/%s/blob/%s/%s?raw=true' "$REPO" "$1" "$2"; }
+            has() { awk -v p="$1" '$2 == p { f = 1 } END { exit !f }' <<<"$evidence"; }
+            sha_of() { awk -v p="$1" '$2 == p { print $1; exit }' <<<"$evidence"; }
+            marker='<!-- pr-evidence-gallery -->'
+            body="$marker"$'\n'"### Evidence: \`.pr-evidence/$latest\`"$'\n\n'
+            body+="Published to this branch with \`publish.sh\` and taken out again in the next commit, so none of it reaches \`main\`. Shown by the PR evidence check."$'\n\n'
+            while read -r sha path; do
+              base=${path%.*} name=${path#.pr-evidence/"$latest"/}
+              case "$path" in
+                *.gif)
+                  video=""
+                  for ext in mp4 webm mov; do has "$base.$ext" && { video=$base.$ext; break; }; done
+                  if [ -n "$video" ]; then
+                    body+="[![Demo video]($(url "$sha" "$path"))]($(url "$(sha_of "$video")" "$video"))"$'\n\n'
+                    body+="[Demo video (${video##*.})]($(url "$(sha_of "$video")" "$video"))"$'\n\n'
+                  else
+                    body+="**${name%.*}**"$'\n\n'"![${name}]($(url "$sha" "$path"))"$'\n\n'
+                  fi
+                  ;;
+                *.mp4 | *.webm | *.mov) has "$base.gif" || body+="[Video: ${name}]($(url "$sha" "$path"))"$'\n\n' ;;
+                *-phone.*)
+                  desktop=${base%-phone}-desktop.${path##*.}
+                  body+="**${name%-phone.*}**"$'\n\n'"<img src=\"$(url "$sha" "$path")\" alt=\"${name}\" width=\"240\">"
+                  has "$desktop" && body+=" <img src=\"$(url "$(sha_of "$desktop")" "$desktop")\" alt=\"${desktop#.pr-evidence/"$latest"/}\" width=\"560\">"
+                  body+=$'\n\n'
+                  ;;
+                *-desktop.*) has "${base%-desktop}-phone.${path##*.}" ||
+                  body+="**${name%.*}**"$'\n\n'"<img src=\"$(url "$sha" "$path")\" alt=\"${name}\" width=\"560\">"$'\n\n' ;;
+                *) body+="**${name%.*}**"$'\n\n'"<img src=\"$(url "$sha" "$path")\" alt=\"${name}\" width=\"560\">"$'\n\n' ;;
+              esac
+            done <<<"$evidence"
+
+            comment=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
+              --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id")
+            comment=$(head -1 <<<"$comment")
+            if [ -n "$comment" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$comment" -f body="$body" >/dev/null && posted=1 || posted=0
+            else
+              gh api "repos/$REPO/issues/$NUMBER/comments" -f body="$body" >/dev/null && posted=1 || posted=0
+            fi
+            [ "$posted" = 1 ] && echo "Showed $(wc -l <<<"$evidence" | tr -d ' ') evidence file(s) from .pr-evidence/$latest in a comment." ||
+              echo "::warning title=Evidence not shown::Could not comment: grant the calling job pull-requests: write. The evidence still counts."
+          fi
 
           # The section: from a "Verification" or "Proof" heading to the next heading, comments removed.
           section=$(jq -r '.body // ""' <<<"$pr" | tr -d '\r' | perl -0777 -pe 's/<!--.*?-->//gs' | awk '
@@ -63,9 +135,11 @@ jobs:
           videos=$(grep -cEi '\.(mp4|webm|mov|gif)([?#][^[:space:])"]*)?([[:space:])"]|$)|^[[:space:]]*https://github\.com/user-attachments/assets/[0-9a-f-]+[[:space:]]*$' <<<"$section" || true)
           none=$(grep -cEi '^[[:space:]>*_-]*no visible surface[*_]*[[:space:]]*:[*_]*[[:space:]]*[^[:space:]]' <<<"$section" || true)
           fences=$(grep -cE '^[[:space:]]*(```|~~~)' <<<"$section" || true)
+          images=$((images + stills))
+          videos=$((videos + moving))
 
           if [ -z "$(tr -d '[:space:]' <<<"$section")" ]; then
-            fail "No verification" "Add a \"## Verification\" section that shows the change working: screenshots and a demo video, or \"No visible surface:\" with the commands you ran and their output."
+            fail "No verification" "Add a \"## Verification\" section that says what you checked and shows the change working: screenshots and a demo video, or \"No visible surface:\" with the commands you ran and their output."
           elif [ "$none" -gt 0 ]; then
             [ "$fences" -ge 2 ] ||
               fail "No output shown" "\"No visible surface\" needs the commands you ran and their output, in a code block."
@@ -77,8 +151,8 @@ jobs:
               fi
             fi
           else
-            [ "$images" -gt 0 ] || fail "No screenshots" "Add a screenshot of each changed screen to the Verification section."
-            [ "$videos" -gt 0 ] || fail "No demo video" "Add a demo video of the changed flow to the Verification section."
+            [ "$images" -gt 0 ] || fail "No screenshots" "Add a screenshot of each changed screen: publish it with agent-harness scripts/pr-evidence/publish.sh, or put it in the Verification section."
+            [ "$videos" -gt 0 ] || fail "No demo video" "Add a demo video of the changed flow: publish it with agent-harness scripts/pr-evidence/publish.sh, or put it in the Verification section."
           fi
 
           leaked=$(grep -E '^\.pr-evidence/' <<<"$changed" || true)
